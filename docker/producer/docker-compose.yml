@@ -6,9 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: gps-producer
-    volumes:
-      - ./data:/data
-      - ./config:/app/config
+    networks:
+      - kafka-network
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     healthcheck:
@@ -23,3 +24,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+networks:
+  kafka-network:
+    name: kafka-network
+    external: true

@@ -87,8 +87,6 @@ def create_producer():
             value_serializer=lambda v: json.dumps(v).encode('utf-8'),
             api_version=tuple(KAFKA_CONFIG['api_version'])
         )
-        # Test the connection
-        producer.list_topics()
         logger.info("Successfully created Kafka producer")
         return producer
     except Exception as e:

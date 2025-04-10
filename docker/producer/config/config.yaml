@@ -1,5 +1,5 @@
 kafka:
-  bootstrap_servers: 'host.docker.internal:9092'
+  bootstrap_servers: 'kafka:9092'
   topic: 'gps-data'
   api_version: [2, 5, 0]
   retry:

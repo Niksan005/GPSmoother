@@ -1,27 +1,22 @@
-FROM python:3.9-slim
+FROM python:3.9.18-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    netcat-traditional \
-    && rm -rf /var/lib/apt/lists/*
+# Install only the required packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends netcat-traditional && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker cache
+# Copy application files
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
-
-# Create necessary directories
-RUN mkdir -p /data /app/config
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-
-# Copy the producer script
+COPY config/config.yaml /app/config/
 COPY producer.py .
 
-# The CSV file will be mounted at runtime
+# Create data directory and copy data file
+RUN mkdir -p /data
+COPY data/raw_gps.csv /data/
+
+# Run the producer
 CMD ["python", "producer.py"] 
