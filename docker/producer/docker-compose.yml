@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gps-producer
+    volumes:
+      - ./data:/data
+      - ./config:/app/config
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import socket; socket.gethostbyname('host.docker.internal')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
