@@ -11,12 +11,15 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy configuration
 COPY config/config.yaml /app/config/
-COPY producer.py .
+
+# Copy source code
+COPY src /app/src
 
 # Create data directory and copy data file
 RUN mkdir -p /data
 COPY data/raw_gps.csv /data/
 
 # Run the producer
-CMD ["python", "producer.py"] 
+CMD ["python", "-m", "src.main"] 
