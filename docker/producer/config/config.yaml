@@ -1,0 +1,16 @@
+kafka:
+  bootstrap_servers: 'kafka:9092'
+  topic: 'gps-data'
+  api_version: [2, 5, 0]
+  retry:
+    max_attempts: 30
+    delay_seconds: 2
+
+producer:
+  csv_file: '/data/raw_gps.csv'
+  message_delay:
+    min: 0
+    max: 2
+  logging:
+    level: 'INFO'
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

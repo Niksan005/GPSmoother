@@ -1,0 +1,110 @@
+import json
+import logging
+import socket
+import time
+from typing import Dict, Any, Callable
+
+from kafka import KafkaProducer
+
+logger = logging.getLogger(__name__)
+
+class KafkaProducerService:
+    """Responsible for Kafka producer operations."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Kafka producer service.
+        
+        Args:
+            config: Dictionary containing Kafka configuration
+        """
+        self.config = config
+        self.producer = None
+        self.topic = config['topic']
+    
+    def wait_for_kafka(self) -> bool:
+        """
+        Wait for Kafka to be available.
+        
+        Returns:
+            True if Kafka is available, False otherwise
+        """
+        max_retries = self.config['retry']['max_attempts']
+        retry_delay = self.config['retry']['delay_seconds']
+        
+        for attempt in range(max_retries):
+            try:
+                # Try to resolve the host
+                host, port = self.config['bootstrap_servers'].split(':')
+                socket.gethostbyname(host)
+                
+                # Try to connect to Kafka
+                producer = self._create_producer()
+                # Test the connection by sending a test message
+                future = producer.send(self.topic, value={'test': 'connection'})
+                future.get(timeout=10)  # Wait for the message to be sent
+                producer.close()
+                logger.info("Successfully connected to Kafka")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to connect to Kafka (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("Max retries reached. Could not connect to Kafka.")
+                    return False
+    
+    def create_producer(self) -> None:
+        """
+        Create and store a Kafka producer.
+        
+        Raises:
+            Exception: If producer creation fails
+        """
+        try:
+            self.producer = self._create_producer()
+            logger.info("Successfully created Kafka producer")
+        except Exception as e:
+            logger.error(f"Failed to create Kafka producer: {e}")
+            raise
+    
+    def _create_producer(self) -> KafkaProducer:
+        """
+        Create a Kafka producer with the configured settings.
+        
+        Returns:
+            KafkaProducer instance
+        """
+        return KafkaProducer(
+            bootstrap_servers=self.config['bootstrap_servers'],
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            api_version=tuple(self.config['api_version'])
+        )
+    
+    def send_message(self, message: Dict[str, Any]) -> None:
+        """
+        Send a message to the configured Kafka topic.
+        
+        Args:
+            message: Dictionary containing the message to send
+        """
+        if not self.producer:
+            raise RuntimeError("Kafka producer not initialized")
+        
+        try:
+            self.producer.send(self.topic, value=message)
+        except Exception as e:
+            logger.error(f"Error sending message to Kafka: {e}")
+            raise
+    
+    def flush(self) -> None:
+        """Flush any pending messages to Kafka."""
+        if self.producer:
+            self.producer.flush()
+    
+    def close(self) -> None:
+        """Close the Kafka producer."""
+        if self.producer:
+            self.producer.close()
+            self.producer = None 
