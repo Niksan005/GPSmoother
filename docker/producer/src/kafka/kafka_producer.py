@@ -43,7 +43,7 @@ class KafkaProducerService:
                 # Try to connect to Kafka
                 producer = self._create_producer()
                 # Test the connection by sending a test message
-                future = producer.send(self.topic, value={'test': 'connection'})
+                future = producer.send('test-topic', value={'test': 'connection'})
                 future.get(timeout=10)  # Wait for the message to be sent
                 producer.close()
                 logger.info("Successfully connected to Kafka")

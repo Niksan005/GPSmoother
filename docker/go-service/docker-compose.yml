@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  gpsmoother:
+    build:
+      context: ../..
+      dockerfile: docker/go-service/Dockerfile
+    container_name: gpsmoother
+    networks:
+      - kafka-network
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  kafka-network:
+    name: kafka-network
+    external: true 
