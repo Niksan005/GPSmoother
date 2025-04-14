@@ -2,35 +2,18 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"net/http"
 	"os"
-	"strconv"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/niksan/gpsmoother/processor/internal/config"
-	"github.com/segmentio/kafka-go"
+	"github.com/niksan/gpsmoother/processor/internal/kafka"
+	"github.com/niksan/gpsmoother/processor/internal/server"
+	"github.com/niksan/gpsmoother/processor/internal/service"
 	"github.com/sirupsen/logrus"
 )
-
-func parseProtocolVersion(version string) (int, int, error) {
-	parts := strings.Split(version, ".")
-	if len(parts) != 3 {
-		return 0, 0, fmt.Errorf("invalid version format: %s", version)
-	}
-	major, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, err
-	}
-	minor, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, 0, err
-	}
-	return major, minor, nil
-}
 
 func main() {
 	// Load configuration
@@ -56,74 +39,71 @@ func main() {
 	}
 	logger.SetLevel(level)
 
-	// Parse Kafka protocol version
-	major, minor, err := parseProtocolVersion(cfg.Kafka.ProtocolVersion)
-	if err != nil {
-		logger.Fatalf("Invalid Kafka protocol version: %v", err)
-	}
-	logger.Infof("Using Kafka protocol version %d.%d", major, minor)
-
-	// Initialize Kafka writer
-	kafkaWriter := &kafka.Writer{
-		Addr:     kafka.TCP(cfg.Kafka.Brokers),
-		Topic:    cfg.Kafka.Topic,
-		Balancer: &kafka.LeastBytes{},
-	}
-	defer kafkaWriter.Close()
-
-	// Initialize Kafka dialer
-	dialer := &kafka.Dialer{
-		ClientID: "gps-processor",
-	}
-
-	kafkaReader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{cfg.Kafka.Brokers},
-		Topic:   cfg.Kafka.Topic,
-		GroupID: cfg.Kafka.GroupID,
-		Dialer:  dialer,
-		GroupBalancers: []kafka.GroupBalancer{
-			kafka.RangeGroupBalancer{},
-			kafka.RoundRobinGroupBalancer{},
-		},
-		MinBytes: 10e3, // 10KB
-		MaxBytes: 10e6, // 10MB
-		MaxWait:  1 * time.Second,
-		ReadLagInterval: -1,
+	// Create Kafka client configuration
+	kafkaConfig := kafka.Config{
+		Brokers:          cfg.Kafka.Brokers,
+		Topic:            cfg.Kafka.Topic,
+		GroupID:          cfg.Kafka.GroupID,
+		ProtocolVersion:  cfg.Kafka.ProtocolVersion,
+		MinBytes:         10e3, // 10KB
+		MaxBytes:         10e6, // 10MB
+		MaxWait:          1 * time.Second,
 		HeartbeatInterval: 3 * time.Second,
-		SessionTimeout: 10 * time.Second,
-		RebalanceTimeout: 60 * time.Second,
-		RetentionTime: 24 * time.Hour,
-		StartOffset: kafka.FirstOffset,
-		MaxAttempts: 3,
-	})
+		SessionTimeout:    10 * time.Second,
+		RebalanceTimeout:  60 * time.Second,
+		RetentionTime:     24 * time.Hour,
+		MaxAttempts:       3,
+	}
 
-	defer kafkaReader.Close()
+	// Create processor service
+	processor, err := service.NewProcessor(service.Config{
+		KafkaConfig: kafkaConfig,
+	}, logger)
+	if err != nil {
+		logger.Fatalf("Failed to create processor: %v", err)
+	}
 
-	router := mux.NewRouter()
+	// Create HTTP server
+	httpServer := server.NewServer(server.Config{
+		Host: cfg.Server.Host,
+		Port: cfg.Server.Port,
+	}, logger)
 
-	// Health check endpoint
-	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	}).Methods("GET")
+	// Create context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Start Kafka message processing in a goroutine
+	// Start processor
+	processor.Start(ctx)
+
+	// Start HTTP server in a goroutine
 	go func() {
-		for {
-			msg, err := kafkaReader.ReadMessage(context.Background())
-			if err != nil {
-				logger.Errorf("Error reading message: %v", err)
-				continue
-			}
-			logger.Infof("Received message: %s", string(msg.Value))
-			// TODO: Process the GPS data here
+		if err := httpServer.Start(); err != nil {
+			logger.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
-	// Start HTTP server
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	logger.Infof("Starting processor service on %s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
-		logger.Fatalf("Failed to start server: %v", err)
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	// Start graceful shutdown
+	logger.Info("Shutting down...")
+
+	// Create shutdown context with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// Stop processor
+	if err := processor.Stop(); err != nil {
+		logger.Errorf("Error stopping processor: %v", err)
 	}
+
+	// Stop HTTP server
+	if err := httpServer.Stop(shutdownCtx); err != nil {
+		logger.Errorf("Error stopping server: %v", err)
+	}
+
+	logger.Info("Shutdown complete")
 } 
