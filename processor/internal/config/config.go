@@ -27,6 +27,7 @@ type KafkaConfig struct {
 	MaxBytes        int    `mapstructure:"max_bytes"`
 	Partition       int    `mapstructure:"partition"`
 	ProtocolVersion string `mapstructure:"protocol_version"`
+	BatchSize       int    `mapstructure:"batch_size"`
 }
 
 type LoggingConfig struct {
@@ -47,6 +48,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.SetDefault("kafka.max_bytes", 10000000)
 	v.SetDefault("kafka.partition", 0)
 	v.SetDefault("kafka.protocol_version", "2.5.0")
+	v.SetDefault("kafka.batch_size", 10)
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
 

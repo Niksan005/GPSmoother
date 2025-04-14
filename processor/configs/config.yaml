@@ -10,6 +10,7 @@ kafka:
   max_bytes: 10000000
   partition: 0
   protocol_version: '3.0.0'
+  batch_size: 10
 
 logging:
   level: 'info'

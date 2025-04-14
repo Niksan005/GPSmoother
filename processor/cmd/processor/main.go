@@ -58,6 +58,7 @@ func main() {
 	// Create processor service
 	processor, err := service.NewProcessor(service.Config{
 		KafkaConfig: kafkaConfig,
+		BatchSize:   cfg.Kafka.BatchSize,
 	}, logger)
 	if err != nil {
 		logger.Fatalf("Failed to create processor: %v", err)

@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -10,9 +11,9 @@ import (
 
 // Client represents a Kafka client that can read and write messages
 type Client struct {
-	reader *kafka.Reader
-	writer *kafka.Writer
-	logger *logrus.Logger
+	readers map[int32]*kafka.Reader
+	writer  *kafka.Writer
+	logger  *logrus.Logger
 }
 
 // Config holds Kafka client configuration
@@ -45,38 +46,46 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 		ClientID: "gps-processor",
 	}
 
-	// Initialize Kafka reader
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{cfg.Brokers},
-		Topic:   cfg.Topic,
-		GroupID: cfg.GroupID,
-		Dialer:  dialer,
-		GroupBalancers: []kafka.GroupBalancer{
-			kafka.RangeGroupBalancer{},
-			kafka.RoundRobinGroupBalancer{},
-		},
-		MinBytes:         cfg.MinBytes,
-		MaxBytes:         cfg.MaxBytes,
-		MaxWait:          cfg.MaxWait,
-		ReadLagInterval:  -1,
-		HeartbeatInterval: cfg.HeartbeatInterval,
-		SessionTimeout:    cfg.SessionTimeout,
-		RebalanceTimeout:  cfg.RebalanceTimeout,
-		RetentionTime:     cfg.RetentionTime,
-		StartOffset:       kafka.FirstOffset,
-		MaxAttempts:       cfg.MaxAttempts,
-	})
+	// Get topic partitions
+	conn, err := kafka.Dial("tcp", cfg.Brokers)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	partitions, err := conn.ReadPartitions(cfg.Topic)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize readers for each partition
+	readers := make(map[int32]*kafka.Reader)
+	for _, p := range partitions {
+		reader := kafka.NewReader(kafka.ReaderConfig{
+			Brokers: []string{cfg.Brokers},
+			Topic:   cfg.Topic,
+			Partition: int(p.ID),
+			GroupID: cfg.GroupID,
+			Dialer:  dialer,
+			MinBytes:         cfg.MinBytes,
+			MaxBytes:         cfg.MaxBytes,
+			MaxWait:          cfg.MaxWait,
+			ReadLagInterval:  -1,
+			HeartbeatInterval: cfg.HeartbeatInterval,
+			SessionTimeout:    cfg.SessionTimeout,
+			RebalanceTimeout:  cfg.RebalanceTimeout,
+			RetentionTime:     cfg.RetentionTime,
+			StartOffset:       kafka.FirstOffset,
+			MaxAttempts:       cfg.MaxAttempts,
+		})
+		readers[int32(p.ID)] = reader
+	}
 
 	return &Client{
-		reader: reader,
-		writer: writer,
-		logger: logger,
+		readers: readers,
+		writer:  writer,
+		logger:  logger,
 	}, nil
-}
-
-// ReadMessage reads a message from Kafka
-func (c *Client) ReadMessage(ctx context.Context) (kafka.Message, error) {
-	return c.reader.ReadMessage(ctx)
 }
 
 // WriteMessage writes a message to Kafka
@@ -87,11 +96,66 @@ func (c *Client) WriteMessage(ctx context.Context, key, value []byte) error {
 	})
 }
 
+// ReadMessageBatch reads a batch of messages from all Kafka partitions
+func (c *Client) ReadMessageBatch(ctx context.Context, batchSize int) (map[int32][]kafka.Message, error) {
+	if batchSize <= 0 {
+		return nil, fmt.Errorf("batch size must be greater than 0")
+	}
+
+	partitionMessages := make(map[int32][]kafka.Message)
+	
+	for partitionID, reader := range c.readers {
+		messages := make([]kafka.Message, 0, batchSize)
+		readCount := 0
+
+		// Try to read up to batchSize messages
+		for readCount < batchSize {
+			msg, err := reader.ReadMessage(ctx)
+			if err != nil {
+				if err == context.DeadlineExceeded || err == context.Canceled {
+					break // Stop reading if context is done
+				}
+				return partitionMessages, err
+			}
+			messages = append(messages, msg)
+			readCount++
+		}
+
+		// Only process if we got a full batch
+		if len(messages) == batchSize {
+			// Log the messages before committing
+			c.logger.WithFields(logrus.Fields{
+				"partition": partitionID,
+				"message_count": len(messages),
+				"batch_size": batchSize,
+			}).Info("Batch of messages read from Kafka partition")
+
+			// Commit the offset for all messages in the batch
+			lastMsg := messages[len(messages)-1]
+			if err := reader.CommitMessages(ctx, lastMsg); err != nil {
+				c.logger.WithError(err).Error("Failed to commit messages")
+				return partitionMessages, err
+			}
+			
+			partitionMessages[partitionID] = messages
+		} else if len(messages) > 0 {
+			// If we got some messages but not a full batch, seek back to the start of the batch
+			if err := reader.SetOffset(messages[0].Offset); err != nil {
+				c.logger.WithError(err).Error("Failed to seek back to batch start")
+			}
+		}
+	}
+	
+	return partitionMessages, nil
+}
+
 // Close closes the Kafka client
 func (c *Client) Close() error {
-	if err := c.reader.Close(); err != nil {
-		c.logger.Errorf("Error closing Kafka reader: %v", err)
-		return err
+	for _, reader := range c.readers {
+		if err := reader.Close(); err != nil {
+			c.logger.Errorf("Error closing Kafka reader: %v", err)
+			return err
+		}
 	}
 	if err := c.writer.Close(); err != nil {
 		c.logger.Errorf("Error closing Kafka writer: %v", err)
