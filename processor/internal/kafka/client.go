@@ -19,7 +19,8 @@ type Client struct {
 // Config holds Kafka client configuration
 type Config struct {
 	Brokers          string
-	Topic            string
+	InputTopic       string
+	OutputTopic      string
 	GroupID          string
 	ProtocolVersion  string
 	MinBytes         int
@@ -34,10 +35,10 @@ type Config struct {
 
 // NewClient creates a new Kafka client
 func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
-	// Initialize Kafka writer
+	// Initialize Kafka writer for output topic
 	writer := &kafka.Writer{
 		Addr:     kafka.TCP(cfg.Brokers),
-		Topic:    cfg.Topic,
+		Topic:    cfg.OutputTopic,
 		Balancer: &kafka.LeastBytes{},
 	}
 
@@ -53,7 +54,7 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 	}
 	defer conn.Close()
 
-	partitions, err := conn.ReadPartitions(cfg.Topic)
+	partitions, err := conn.ReadPartitions(cfg.InputTopic)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +64,7 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 	for _, p := range partitions {
 		reader := kafka.NewReader(kafka.ReaderConfig{
 			Brokers: []string{cfg.Brokers},
-			Topic:   cfg.Topic,
+			Topic:   cfg.InputTopic,
 			Partition: int(p.ID),
 			GroupID: cfg.GroupID,
 			Dialer:  dialer,
@@ -123,19 +124,12 @@ func (c *Client) ReadMessageBatch(ctx context.Context, batchSize int) (map[int32
 
 		// Only process if we got a full batch
 		if len(messages) == batchSize {
-			// Log the messages before committing
+			// Log the messages before processing
 			c.logger.WithFields(logrus.Fields{
 				"partition": partitionID,
 				"message_count": len(messages),
 				"batch_size": batchSize,
 			}).Info("Batch of messages read from Kafka partition")
-
-			// Commit the offset for all messages in the batch
-			lastMsg := messages[len(messages)-1]
-			if err := reader.CommitMessages(ctx, lastMsg); err != nil {
-				c.logger.WithError(err).Error("Failed to commit messages")
-				return partitionMessages, err
-			}
 			
 			partitionMessages[partitionID] = messages
 		} else if len(messages) > 0 {
@@ -147,6 +141,36 @@ func (c *Client) ReadMessageBatch(ctx context.Context, batchSize int) (map[int32
 	}
 	
 	return partitionMessages, nil
+}
+
+// CommitMessages commits the offset for a batch of messages
+func (c *Client) CommitMessages(ctx context.Context, partition int32, messages []kafka.Message) error {
+	reader, ok := c.readers[partition]
+	if !ok {
+		return fmt.Errorf("no reader found for partition %d", partition)
+	}
+
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// Commit the offset for the last message in the batch
+	lastMsg := messages[len(messages)-1]
+	if err := reader.CommitMessages(ctx, lastMsg); err != nil {
+		c.logger.WithFields(logrus.Fields{
+			"error": err,
+			"partition": partition,
+			"offset": lastMsg.Offset,
+		}).Error("Failed to commit messages")
+		return err
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"partition": partition,
+		"offset": lastMsg.Offset,
+	}).Info("Successfully committed messages")
+
+	return nil
 }
 
 // Close closes the Kafka client
@@ -161,5 +185,29 @@ func (c *Client) Close() error {
 		c.logger.Errorf("Error closing Kafka writer: %v", err)
 		return err
 	}
+	return nil
+}
+
+// SeekToOffset seeks to a specific offset in a partition
+func (c *Client) SeekToOffset(partition int32, offset int64) error {
+	reader, ok := c.readers[partition]
+	if !ok {
+		return fmt.Errorf("no reader found for partition %d", partition)
+	}
+
+	if err := reader.SetOffset(offset); err != nil {
+		c.logger.WithFields(logrus.Fields{
+			"error": err,
+			"partition": partition,
+			"offset": offset,
+		}).Error("Failed to seek to offset")
+		return err
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"partition": partition,
+		"offset": offset,
+	}).Info("Successfully sought to offset")
+
 	return nil
 } 

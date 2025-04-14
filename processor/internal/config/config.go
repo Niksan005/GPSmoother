@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	Kafka   KafkaConfig  `mapstructure:"kafka"`
+	OSRM    OSRMConfig   `mapstructure:"osrm"`
 	Logging LoggingConfig `mapstructure:"logging"`
 }
 
@@ -21,13 +22,18 @@ type ServerConfig struct {
 
 type KafkaConfig struct {
 	Brokers         string `mapstructure:"brokers"`
-	Topic           string `mapstructure:"topic"`
+	InputTopic      string `mapstructure:"input_topic"`
+	OutputTopic     string `mapstructure:"output_topic"`
 	GroupID         string `mapstructure:"group_id"`
 	MinBytes        int    `mapstructure:"min_bytes"`
 	MaxBytes        int    `mapstructure:"max_bytes"`
 	Partition       int    `mapstructure:"partition"`
 	ProtocolVersion string `mapstructure:"protocol_version"`
 	BatchSize       int    `mapstructure:"batch_size"`
+}
+
+type OSRMConfig struct {
+	URL string `mapstructure:"url"`
 }
 
 type LoggingConfig struct {

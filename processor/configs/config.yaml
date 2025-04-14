@@ -4,13 +4,17 @@ server:
 
 kafka:
   brokers: 'kafka:9092'
-  topic: 'gps-data'
+  input_topic: 'gps-data'
+  output_topic: 'smooth-gps-data'
   group_id: 'gps-processor'
   min_bytes: 10000
   max_bytes: 10000000
   partition: 0
   protocol_version: '3.0.0'
   batch_size: 10
+
+osrm:
+  url: 'http://osrm:5000'
 
 logging:
   level: 'info'

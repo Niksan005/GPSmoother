@@ -42,7 +42,8 @@ func main() {
 	// Create Kafka client configuration
 	kafkaConfig := kafka.Config{
 		Brokers:          cfg.Kafka.Brokers,
-		Topic:            cfg.Kafka.Topic,
+		InputTopic:       cfg.Kafka.InputTopic,
+		OutputTopic:      cfg.Kafka.OutputTopic,
 		GroupID:          cfg.Kafka.GroupID,
 		ProtocolVersion:  cfg.Kafka.ProtocolVersion,
 		MinBytes:         10e3, // 10KB
@@ -58,6 +59,7 @@ func main() {
 	// Create processor service
 	processor, err := service.NewProcessor(service.Config{
 		KafkaConfig: kafkaConfig,
+		OSRM:        cfg.OSRM,
 		BatchSize:   cfg.Kafka.BatchSize,
 	}, logger)
 	if err != nil {
