@@ -61,6 +61,7 @@ func main() {
 		KafkaConfig: kafkaConfig,
 		OSRM:        cfg.OSRM,
 		BatchSize:   cfg.Kafka.BatchSize,
+		WorkerCount: cfg.Processor.WorkerCount,
 	}, logger)
 	if err != nil {
 		logger.Fatalf("Failed to create processor: %v", err)

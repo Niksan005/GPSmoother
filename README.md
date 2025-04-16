@@ -18,12 +18,9 @@ First, you need to set up OSRM for routing data:
 ```bash
 # Download and extract OSRM data
 cd data
-wget https://download.geofabrik.de/europe/germany-latest.osm.pbf
 
-# Build OSRM
-docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/germany-latest.osm.pbf
-docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-partition /data/germany-latest.osm.pbf
-docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-customize /data/germany-latest.osm.pbf
+docker compose -f ./osrm.yml --profile init up --build
+docker compose -f ./osrm.yml --profile app up --build
 ```
 
 ### 2. Start Kafka Services
@@ -46,6 +43,13 @@ docker exec -it kafka kafka-topics.sh --create --topic smooth-gps-data --bootstr
 
 ```bash
 cd docker/producer
+docker-compose up -d
+```
+
+### 5. Start the Processor
+
+```bash
+cd docker/processor
 docker-compose up -d
 ```
 

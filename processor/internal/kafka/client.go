@@ -65,7 +65,6 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 		reader := kafka.NewReader(kafka.ReaderConfig{
 			Brokers: []string{cfg.Brokers},
 			Topic:   cfg.InputTopic,
-			Partition: int(p.ID),
 			GroupID: cfg.GroupID,
 			Dialer:  dialer,
 			MinBytes:         cfg.MinBytes,
@@ -105,38 +104,52 @@ func (c *Client) ReadMessageBatch(ctx context.Context, batchSize int) (map[int32
 
 	partitionMessages := make(map[int32][]kafka.Message)
 	
+	// Process partitions in a round-robin fashion
 	for partitionID, reader := range c.readers {
-		messages := make([]kafka.Message, 0, batchSize)
-		readCount := 0
+		// Create a timeout context for this partition
+		timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
 
-		// Try to read up to batchSize messages
+		// Try to read a single message first to check if there's data
+		msg, err := reader.ReadMessage(timeoutCtx)
+		if err != nil {
+			if err == context.DeadlineExceeded || err == context.Canceled {
+				continue // Skip this partition if context is done
+			}
+			continue // Skip this partition on any other error
+		}
+
+		// If we got a message, read the rest of the batch
+		messages := make([]kafka.Message, 0, batchSize)
+		messages = append(messages, msg)
+		readCount := 1
+
+		// Try to read up to batchSize-1 more messages (since we already read one)
 		for readCount < batchSize {
-			msg, err := reader.ReadMessage(ctx)
+			msg, err := reader.ReadMessage(timeoutCtx)
 			if err != nil {
 				if err == context.DeadlineExceeded || err == context.Canceled {
 					break // Stop reading if context is done
 				}
-				return partitionMessages, err
+				break // Stop reading on any other error
 			}
 			messages = append(messages, msg)
 			readCount++
 		}
 
-		// Only process if we got a full batch
-		if len(messages) == batchSize {
-			// Log the messages before processing
-			c.logger.WithFields(logrus.Fields{
-				"partition": partitionID,
-				"message_count": len(messages),
-				"batch_size": batchSize,
-			}).Info("Batch of messages read from Kafka partition")
-			
-			partitionMessages[partitionID] = messages
-		} else if len(messages) > 0 {
-			// If we got some messages but not a full batch, seek back to the start of the batch
-			if err := reader.SetOffset(messages[0].Offset); err != nil {
-				c.logger.WithError(err).Error("Failed to seek back to batch start")
-			}
+		// Log the messages before processing
+		c.logger.WithFields(logrus.Fields{
+			"partition": partitionID,
+			"message_count": len(messages),
+			"batch_size": batchSize,
+		}).Info("Batch of messages read from Kafka partition")
+		
+		partitionMessages[partitionID] = messages
+
+		// If we got messages from this partition, return them immediately
+		// This ensures we process messages as soon as they're available
+		if len(messages) > 0 {
+			return partitionMessages, nil
 		}
 	}
 	

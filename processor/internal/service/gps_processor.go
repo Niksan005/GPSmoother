@@ -29,11 +29,32 @@ func NewRoadSnapper(logger *logrus.Logger, osrmURL string) *RoadSnapper {
 func (s *RoadSnapper) SnapToRoad(point ProcessedGPSData) (ProcessedGPSData, error) {
 	url := fmt.Sprintf("%s/nearest/v1/driving/%f,%f", s.osrmURL, point.Longitude, point.Latitude)
 	
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	
+	s.logger.WithFields(logrus.Fields{
+		"url": url,
+		"point": point,
+	}).Debug("Calling OSRM nearest service")
+	
+	resp, err := client.Get(url)
 	if err != nil {
-		return ProcessedGPSData{}, err
+		s.logger.WithFields(logrus.Fields{
+			"error": err,
+			"url": url,
+		}).Error("OSRM nearest service call failed")
+		return point, fmt.Errorf("OSRM nearest service call failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.WithFields(logrus.Fields{
+			"status_code": resp.StatusCode,
+			"url": url,
+		}).Error("OSRM nearest service returned non-200 status")
+		return point, fmt.Errorf("OSRM nearest service returned status %d", resp.StatusCode)
+	}
 
 	var result struct {
 		Waypoints []struct {
@@ -42,15 +63,28 @@ func (s *RoadSnapper) SnapToRoad(point ProcessedGPSData) (ProcessedGPSData, erro
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return ProcessedGPSData{}, err
+		s.logger.WithFields(logrus.Fields{
+			"error": err,
+			"url": url,
+		}).Error("Failed to decode OSRM nearest service response")
+		return point, fmt.Errorf("failed to decode OSRM nearest service response: %w", err)
 	}
 
 	if len(result.Waypoints) == 0 {
+		s.logger.WithFields(logrus.Fields{
+			"point": point,
+		}).Warn("No waypoints found in OSRM nearest service response")
 		return point, nil
 	}
 
 	point.Latitude = result.Waypoints[0].Location[1]
 	point.Longitude = result.Waypoints[0].Location[0]
+	
+	s.logger.WithFields(logrus.Fields{
+		"original_point": point,
+		"snapped_point": point,
+	}).Debug("Successfully snapped point to road")
+	
 	return point, nil
 }
 
@@ -73,11 +107,33 @@ func (f *RouteFinder) GetRoutePoints(start, end ProcessedGPSData) ([]ProcessedGP
 	url := fmt.Sprintf("%s/route/v1/driving/%f,%f;%f,%f?overview=full&geometries=geojson", 
 		f.osrmURL, start.Longitude, start.Latitude, end.Longitude, end.Latitude)
 	
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	
+	f.logger.WithFields(logrus.Fields{
+		"url": url,
+		"start": start,
+		"end": end,
+	}).Debug("Calling OSRM route service")
+	
+	resp, err := client.Get(url)
 	if err != nil {
-		return nil, err
+		f.logger.WithFields(logrus.Fields{
+			"error": err,
+			"url": url,
+		}).Error("OSRM route service call failed")
+		return nil, fmt.Errorf("OSRM route service call failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		f.logger.WithFields(logrus.Fields{
+			"status_code": resp.StatusCode,
+			"url": url,
+		}).Error("OSRM route service returned non-200 status")
+		return nil, fmt.Errorf("OSRM route service returned status %d", resp.StatusCode)
+	}
 
 	var result struct {
 		Routes []struct {
@@ -88,10 +144,18 @@ func (f *RouteFinder) GetRoutePoints(start, end ProcessedGPSData) ([]ProcessedGP
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		f.logger.WithFields(logrus.Fields{
+			"error": err,
+			"url": url,
+		}).Error("Failed to decode OSRM route service response")
+		return nil, fmt.Errorf("failed to decode OSRM route service response: %w", err)
 	}
 
 	if len(result.Routes) == 0 {
+		f.logger.WithFields(logrus.Fields{
+			"start": start,
+			"end": end,
+		}).Warn("No routes found in OSRM route service response")
 		return nil, fmt.Errorf("no route found")
 	}
 
@@ -125,47 +189,87 @@ func NewMessageProcessor(logger *logrus.Logger) *MessageProcessor {
 
 // ProcessMessage processes a single GPS message
 func (p *MessageProcessor) ProcessMessage(msg []byte) (ProcessedGPSData, error) {
+	p.logger.WithFields(logrus.Fields{
+		"message": string(msg),
+	}).Debug("Processing raw GPS message")
+
 	var rawData RawGPSData
 	if err := json.Unmarshal(msg, &rawData); err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"message": string(msg),
+		}).Error("Failed to unmarshal raw GPS data")
 		return ProcessedGPSData{}, err
 	}
 
+	p.logger.WithFields(logrus.Fields{
+		"raw_data": rawData,
+	}).Debug("Successfully unmarshaled raw GPS data")
+
 	latitude, err := strconv.ParseFloat(rawData.Latitude, 64)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"latitude": rawData.Latitude,
+		}).Error("Failed to parse latitude")
 		return ProcessedGPSData{}, err
 	}
 
 	longitude, err := strconv.ParseFloat(rawData.Longitude, 64)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"longitude": rawData.Longitude,
+		}).Error("Failed to parse longitude")
 		return ProcessedGPSData{}, err
 	}
 
 	speed, err := strconv.ParseFloat(rawData.Speed, 64)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"speed": rawData.Speed,
+		}).Error("Failed to parse speed")
 		return ProcessedGPSData{}, err
 	}
 
 	altitude, err := strconv.ParseFloat(rawData.Altitude, 64)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"altitude": rawData.Altitude,
+		}).Error("Failed to parse altitude")
 		return ProcessedGPSData{}, err
 	}
 
 	signal, err := strconv.Atoi(rawData.Signal)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"signal": rawData.Signal,
+		}).Error("Failed to parse signal")
 		return ProcessedGPSData{}, err
 	}
 
 	satellites, err := strconv.Atoi(rawData.Satellites)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"satellites": rawData.Satellites,
+		}).Error("Failed to parse satellites")
 		return ProcessedGPSData{}, err
 	}
 
 	ts, err := strconv.ParseInt(rawData.Timestamp, 10, 64)
 	if err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"error": err,
+			"timestamp": rawData.Timestamp,
+		}).Error("Failed to parse timestamp")
 		return ProcessedGPSData{}, err
 	}
 
-	return ProcessedGPSData{
+	processedData := ProcessedGPSData{
 		Latitude:    latitude,
 		Longitude:   longitude,
 		Speed:       speed,
@@ -178,7 +282,13 @@ func (p *MessageProcessor) ProcessMessage(msg []byte) (ProcessedGPSData, error) 
 		Status:      rawData.Status,
 		InDepot:     rawData.InDepot,
 		FormattedTS: rawData.FormattedTS,
-	}, nil
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"processed_data": processedData,
+	}).Debug("Successfully processed GPS data")
+
+	return processedData, nil
 }
 
 // GPSProcessor implements the GPSDataProcessor interface

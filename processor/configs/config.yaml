@@ -9,7 +9,6 @@ kafka:
   group_id: 'gps-processor'
   min_bytes: 10000
   max_bytes: 10000000
-  partition: 0
   protocol_version: '3.0.0'
   batch_size: 10
 
@@ -19,3 +18,6 @@ osrm:
 logging:
   level: 'debug'
   format: 'json'
+
+processor:
+  worker_count: 25

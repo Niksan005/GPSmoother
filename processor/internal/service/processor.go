@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,8 +45,13 @@ func NewProcessor(cfg Config, logger *logrus.Logger) (*Processor, error) {
 
 	workerCount := cfg.WorkerCount
 	if workerCount <= 0 {
-		workerCount = 3
+		workerCount = 10 // Increased default worker count
 	}
+
+	logger.WithFields(logrus.Fields{
+		"worker_count": workerCount,
+		"batch_size": cfg.BatchSize,
+	}).Info("Initializing processor with configuration")
 
 	offsetTracker := NewOffsetTracker()
 	healthChecker := NewHealthChecker(logger)
@@ -130,7 +136,15 @@ func (p *Processor) processMessages(ctx context.Context) {
 				"batch_size": p.batchSize,
 				"active_workers": len(workerPool),
 				"max_workers": p.workerCount,
-			}).Debug("Attempting to read next batch of messages")
+				"processing_map_size": func() int {
+					count := 0
+					p.processingMap.Range(func(_, _ interface{}) bool {
+						count++
+						return true
+					})
+					return count
+				}(),
+			}).Debug("Processor state")
 
 			p.healthChecker.UpdateLastCheck()
 
@@ -181,10 +195,22 @@ func (p *Processor) processMessages(ctx context.Context) {
 
 				select {
 				case workerPool <- struct{}{}:
+					p.logger.WithFields(logrus.Fields{
+						"partition": partition,
+						"first_offset": firstOffset,
+						"active_workers": len(workerPool),
+					}).Info("Starting new worker")
 					p.wg.Add(1)
 					go func(partition int32, messages []kafkago.Message) {
 						defer p.wg.Done()
-						defer func() { <-workerPool }()
+						defer func() { 
+							<-workerPool 
+							p.logger.WithFields(logrus.Fields{
+								"partition": partition,
+								"first_offset": firstOffset,
+								"active_workers": len(workerPool),
+							}).Info("Worker completed")
+						}()
 						defer p.markProcessingComplete(partition, firstOffset)
 
 						p.processPartitionMessages(ctx, partition, messages)
@@ -193,7 +219,7 @@ func (p *Processor) processMessages(ctx context.Context) {
 					p.logger.WithFields(logrus.Fields{
 						"active_workers": len(workerPool),
 						"max_workers": p.workerCount,
-					}).Debug("Worker pool full, waiting for available worker")
+					}).Warn("Worker pool full, waiting for available worker")
 					time.Sleep(100 * time.Millisecond)
 				}
 			}
@@ -203,6 +229,10 @@ func (p *Processor) processMessages(ctx context.Context) {
 
 // processPartitionMessages processes messages from a single partition
 func (p *Processor) processPartitionMessages(ctx context.Context, partition int32, messages []kafkago.Message) {
+	// Add a timeout context
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	if len(messages) == 0 {
 		return
 	}
@@ -233,17 +263,62 @@ func (p *Processor) processPartitionMessages(ctx context.Context, partition int3
 	messageBytes := make([][]byte, len(messages))
 	for i, msg := range messages {
 		messageBytes[i] = msg.Value
+		p.logger.WithFields(logrus.Fields{
+			"partition": partition,
+			"offset": msg.Offset,
+			"message": string(msg.Value),
+		}).Debug("Processing message")
 	}
 
 	// Process the batch of messages
+	p.logger.WithFields(logrus.Fields{
+		"partition": partition,
+		"message_count": len(messageBytes),
+	}).Info("Starting GPS processing")
+	
 	processedBatch, processingErrors := p.gpsProcessor.ProcessBatch(messageBytes)
+	
+	// Update health check during processing
+	p.healthChecker.UpdateLastCheck()
+	
 	if len(processingErrors) > 0 {
 		p.logger.WithFields(logrus.Fields{
 			"partition": partition,
 			"error_count": len(processingErrors),
 			"first_offset": firstOffset,
 			"last_offset": lastOffset,
+			"errors": processingErrors,
 		}).Error("Errors occurred during batch processing")
+		
+		// If all errors are OSRM-related, we should still commit the offsets
+		// to prevent getting stuck on the same messages
+		allOSRMErrors := true
+		for _, err := range processingErrors {
+			if !strings.Contains(err.Error(), "OSRM") {
+				allOSRMErrors = false
+				break
+			}
+		}
+		
+		if allOSRMErrors {
+			p.logger.WithFields(logrus.Fields{
+				"partition": partition,
+				"first_offset": firstOffset,
+				"last_offset": lastOffset,
+			}).Warn("All errors are OSRM-related, committing offsets to prevent getting stuck")
+			
+			// Update the offset tracker with the last message's offset
+			p.offsetTracker.UpdateOffset(partition, lastOffset)
+			
+			// Commit the messages
+			if err := p.messageReader.CommitMessages(timeoutCtx, partition, messages); err != nil {
+				p.logger.WithFields(logrus.Fields{
+					"error": err,
+					"partition": partition,
+					"last_offset": lastOffset,
+				}).Error("Failed to commit messages")
+			}
+		}
 		return
 	}
 
@@ -255,6 +330,11 @@ func (p *Processor) processPartitionMessages(ctx context.Context, partition int3
 	}).Info("Successfully processed batch")
 
 	// Smooth the processed GPS data
+	p.logger.WithFields(logrus.Fields{
+		"partition": partition,
+		"point_count": len(processedBatch),
+	}).Info("Starting GPS smoothing")
+	
 	smoothedBatch, err := p.gpsProcessor.SmoothGPSData(processedBatch)
 	if err != nil {
 		p.logger.WithFields(logrus.Fields{
@@ -286,7 +366,7 @@ func (p *Processor) processPartitionMessages(ctx context.Context, partition int3
 			continue
 		}
 
-		if err := p.messageWriter.WriteMessage(ctx, []byte(point.DeviceID), pointBytes); err != nil {
+		if err := p.messageWriter.WriteMessage(timeoutCtx, []byte(point.DeviceID), pointBytes); err != nil {
 			p.logger.WithFields(logrus.Fields{
 				"error": err,
 				"partition": partition,
@@ -309,7 +389,7 @@ func (p *Processor) processPartitionMessages(ctx context.Context, partition int3
 	p.offsetTracker.UpdateOffset(partition, lastOffset)
 
 	// Commit the messages after successful processing
-	if err := p.messageReader.CommitMessages(ctx, partition, messages); err != nil {
+	if err := p.messageReader.CommitMessages(timeoutCtx, partition, messages); err != nil {
 		p.logger.WithFields(logrus.Fields{
 			"error": err,
 			"partition": partition,

@@ -13,6 +13,7 @@ type Config struct {
 	Kafka   KafkaConfig  `mapstructure:"kafka"`
 	OSRM    OSRMConfig   `mapstructure:"osrm"`
 	Logging LoggingConfig `mapstructure:"logging"`
+	Processor ProcessorConfig `mapstructure:"processor"`
 }
 
 type ServerConfig struct {
@@ -27,7 +28,6 @@ type KafkaConfig struct {
 	GroupID         string `mapstructure:"group_id"`
 	MinBytes        int    `mapstructure:"min_bytes"`
 	MaxBytes        int    `mapstructure:"max_bytes"`
-	Partition       int    `mapstructure:"partition"`
 	ProtocolVersion string `mapstructure:"protocol_version"`
 	BatchSize       int    `mapstructure:"batch_size"`
 }
@@ -41,6 +41,10 @@ type LoggingConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+type ProcessorConfig struct {
+	WorkerCount int `mapstructure:"worker_count"`
+}
+
 func LoadConfig(configPath string) (*Config, error) {
 	v := viper.New()
 
@@ -52,7 +56,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.SetDefault("kafka.group_id", "gps-processor")
 	v.SetDefault("kafka.min_bytes", 10000)
 	v.SetDefault("kafka.max_bytes", 10000000)
-	v.SetDefault("kafka.partition", 0)
 	v.SetDefault("kafka.protocol_version", "2.5.0")
 	v.SetDefault("kafka.batch_size", 10)
 	v.SetDefault("logging.level", "info")
