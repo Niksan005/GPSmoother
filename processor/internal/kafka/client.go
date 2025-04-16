@@ -39,7 +39,7 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 	writer := &kafka.Writer{
 		Addr:     kafka.TCP(cfg.Brokers),
 		Topic:    cfg.OutputTopic,
-		Balancer: &kafka.LeastBytes{},
+		Balancer: &kafka.Hash{},
 	}
 
 	// Initialize Kafka dialer
@@ -76,7 +76,7 @@ func NewClient(cfg Config, logger *logrus.Logger) (*Client, error) {
 			SessionTimeout:    cfg.SessionTimeout,
 			RebalanceTimeout:  cfg.RebalanceTimeout,
 			RetentionTime:     cfg.RetentionTime,
-			StartOffset:       kafka.FirstOffset,
+			StartOffset:       kafka.LastOffset,
 			MaxAttempts:       cfg.MaxAttempts,
 		})
 		readers[int32(p.ID)] = reader

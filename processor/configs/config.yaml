@@ -17,5 +17,5 @@ osrm:
   url: 'http://osrm:5000'
 
 logging:
-  level: 'info'
+  level: 'debug'
   format: 'json'

@@ -25,6 +25,7 @@ go.work.sum
 .env
 
 data/data/
+messages.txt
 
 # Kafka SSL certificates
 docker/kafka/kafka-secrets/certs/
