@@ -2,6 +2,7 @@ import json
 import logging
 import socket
 import time
+import hashlib
 from typing import Dict, Any, Callable
 
 from kafka import KafkaProducer
@@ -43,7 +44,7 @@ class KafkaProducerService:
                 # Try to connect to Kafka
                 producer = self._create_producer()
                 # Test the connection by sending a test message
-                future = producer.send(self.topic, value={'test': 'connection'})
+                future = producer.send('test-topic', value={'test': 'connection'})
                 future.get(timeout=10)  # Wait for the message to be sent
                 producer.close()
                 logger.info("Successfully connected to Kafka")
@@ -123,8 +124,8 @@ class KafkaProducerService:
             if not veh_id:
                 raise ValueError("Message must contain 'veh_id' field")
             
-            # Generate consistent hash key (0 to 2^32-1)
-            hash_key = hash(veh_id) % (2**32)
+            # Generate consistent hash key using SHA-256
+            hash_key = int(hashlib.sha256(str(veh_id).encode('utf-8')).hexdigest(), 16) % (2**32)
             
             # Send message with hashed key for partition assignment
             self.producer.send(
